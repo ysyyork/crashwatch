@@ -10,6 +10,12 @@ fi
 SRC="$(cd "$(dirname "$0")" && pwd)"
 
 install -d /opt/crashwatch /var/log/crashwatch /var/log/crashwatch/reports
+# msr: needed to read the CPU's SMI count (a stuck System Management Interrupt
+# trap is a leading suspect for silent total freezes -- see telemetry.py). No
+# platform-device race here (unlike the watchdog module), so plain
+# modules-load.d is fine.
+echo msr > /etc/modules-load.d/crashwatch-msr.conf
+modprobe msr 2>/dev/null || true
 install -m 0755 "$SRC/telemetry.py"  /opt/crashwatch/telemetry.py
 install -m 0755 "$SRC/postmortem.sh" /opt/crashwatch/postmortem.sh
 install -m 0644 "$SRC/systemd/crashwatch-telemetry.service"  /etc/systemd/system/crashwatch-telemetry.service

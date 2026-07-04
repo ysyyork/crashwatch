@@ -41,6 +41,12 @@ rpt="$REPORTS/crash-$ts.txt"
     ls -la "$PSTORE"/ 2>/dev/null
     cat "$PSTORE"/* 2>/dev/null | head -300
     echo
+    echo "=== WAS THE HARDWARE WATCHDOG ARMED DURING THE CRASHED BOOT? ==="
+    echo "(if this is empty or says no watchdog, the hardware-reset safety net"
+    echo " from harden.sh was NOT active -- that's why this required a manual"
+    echo " power cycle instead of an automatic reboot within ~20s of the freeze)"
+    journalctl -t crashwatch -b -1 --no-pager 2>/dev/null || echo "(no crashwatch watchdog log entries found for the crashed boot)"
+    echo
     echo "=== PREVIOUS BOOT: last 80 kernel lines ==="
     journalctl -k -b -1 --no-pager 2>/dev/null | tail -80
     echo

@@ -33,6 +33,7 @@ wait "$tpid" 2>/dev/null
 csv="$CRASHWATCH_DIR/telemetry-aaaaaaaaaaaa.csv"
 check "telemetry file created"                    "[ -f '$csv' ]"
 check "header present"                            "head -1 '$csv' | grep -q gpu_power_w"
+check "header includes smi_count (SMI trap leading indicator)" "head -1 '$csv' | grep -q smi_count"
 check "captured GPU watts from fake nvidia-smi"   "grep -q 560.42 '$csv'"
 check "no clean-stop marker after kill -9"        "[ ! -f '$CRASHWATCH_DIR/clean-aaaaaaaaaaaa' ]"
 
@@ -42,6 +43,7 @@ rpt="$(ls "$CRASHWATCH_DIR"/reports/crash-*.txt 2>/dev/null | head -1)"
 check "crash report generated"                    "[ -n '$rpt' ]"
 check "report names the crashed boot"             "grep -q aaaaaaaaaaaa '$rpt'"
 check "report contains pre-crash telemetry (560W)" "grep -q 560.42 '$rpt'"
+check "report includes the watchdog-armed status section" "grep -q 'WAS THE HARDWARE WATCHDOG ARMED' '$rpt'"
 
 echo "[3] real SHUTDOWN (system stopping) writes marker => NO report"
 rm -f "$CRASHWATCH_DIR"/reports/crash-*.txt

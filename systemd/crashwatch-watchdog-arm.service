@@ -1,0 +1,13 @@
+[Unit]
+Description=Arm hardware watchdog for crashwatch (retries past early-boot PCH/MFD enumeration races)
+DefaultDependencies=no
+After=systemd-udevd.service
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/crashwatch/arm-watchdog.sh
+
+[Install]
+WantedBy=sysinit.target

@@ -13,6 +13,7 @@ rm -f /etc/systemd/system/crashwatch-telemetry.service \
       /etc/systemd/system/crashwatch-postmortem.service
 systemctl daemon-reload
 rm -rf /opt/crashwatch
+rm -f /etc/modules-load.d/crashwatch-msr.conf
 
 echo "crashwatch programs + units removed."
 echo "Collected data kept in /var/log/crashwatch (run 'sudo rm -rf /var/log/crashwatch' to delete)."

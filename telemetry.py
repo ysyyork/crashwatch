@@ -30,10 +30,11 @@ GPU_FIELDS = (
 GPU_FIELD_COUNT = GPU_FIELDS.count(",") + 1
 HEADER = (
     "wall_iso,mono_s,cpu_pkg_c,load1,mem_avail_mb,psi_cpu_full_avg10,psi_mem_full_avg10,"
-    "nvidia_irq_total,nvidia_smi_ms,gpu_idx,gpu_power_w,gpu_plimit_w,gpu_temp_c,gpu_util,"
-    "gpu_memutil,gpu_sm_mhz,gpu_mem_mhz,pstate,gpu_mem_used_mib,throttle,pcie_gen_cur,"
+    "nvidia_irq_total,nvidia_smi_ms,smi_count,gpu_idx,gpu_power_w,gpu_plimit_w,gpu_temp_c,"
+    "gpu_util,gpu_memutil,gpu_sm_mhz,gpu_mem_mhz,pstate,gpu_mem_used_mib,throttle,pcie_gen_cur,"
     "pcie_gen_max,pcie_width_cur,pcie_width_max,ecc_corrected,ecc_uncorrected\n"
 )
+MSR_SMI_COUNT = 0x34
 
 _running = True
 
@@ -127,6 +128,24 @@ def read_nvidia_irq_total() -> str:
     except OSError:
         return ""
     return str(total) if found else ""
+
+
+def read_smi_count() -> str:
+    """Cumulative System Management Interrupt count from CPU0 (Intel MSR 0x34).
+
+    A climbing count right before an otherwise-unexplained total freeze (video
+    + network + input all dead, but power/fans stay on, kernel watchdogs never
+    fire) points at a stuck SMM trap -- SMM runs above the OS's privilege level
+    and can block NMI delivery outright, which is the one thing that defeats
+    even a hardlockup-panic watchdog. Requires the `msr` kernel module and
+    Intel hardware; returns "" otherwise (e.g. AMD has no equivalent MSR here).
+    """
+    try:
+        with open("/dev/cpu/0/msr", "rb") as handle:
+            handle.seek(MSR_SMI_COUNT)
+            return str(int.from_bytes(handle.read(8), "little"))
+    except OSError:
+        return ""
 
 
 def system_is_shutting_down() -> bool:
@@ -243,12 +262,13 @@ def main() -> None:
             psi_cpu = read_psi_full_avg10("/proc/pressure/cpu")
             psi_mem = read_psi_full_avg10("/proc/pressure/memory")
             irq = read_nvidia_irq_total()
+            smi_count = read_smi_count()  # CPU System Management Interrupts -- unrelated to nvidia-smi below
             smi_ms, gpus = query_gpu()
             gpus = gpus or [",".join([""] * GPU_FIELD_COUNT)]  # still record host metrics if GPU query fails
             for idx, gpu in enumerate(gpus):
                 out.write(
                     f"{wall},{start:.1f},{cpu},{load},{mem},{psi_cpu},{psi_mem},"
-                    f"{irq},{smi_ms},{idx},{gpu}\n"
+                    f"{irq},{smi_ms},{smi_count},{idx},{gpu}\n"
                 )
             out.flush()
             os.fsync(out.fileno())

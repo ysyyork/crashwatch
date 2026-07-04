@@ -23,6 +23,7 @@ fi
 HUNG_TASK_TIMEOUT="${CRASHWATCH_HUNG_TASK_TIMEOUT:-120}"
 
 echo "== 1. hardware watchdog =="
+SRC="$(cd "$(dirname "$0")" && pwd)"
 loaded=""
 for mod in iTCO_wdt sp5100_tco wdat_wdt; do
     if modprobe "$mod" 2>/dev/null; then
@@ -35,7 +36,19 @@ if [ -z "$loaded" ] || [ ! -e /dev/watchdog ]; then
     echo "iTCO_wdt/sp5100_tco/wdat_wdt). Skipping watchdog arming; lockup-panic" >&2
     echo "sysctls below will still be applied." >&2
 else
-    echo "$loaded" > /etc/modules-load.d/crashwatch-watchdog.conf
+    # NOTE: do NOT rely on /etc/modules-load.d alone. It's loaded by
+    # systemd-modules-load.service, which runs very early in boot -- early
+    # enough that iTCO_wdt's underlying PCH/MFD platform device is sometimes
+    # not enumerated yet. In that case modprobe silently "succeeds" (module
+    # inserted) without the driver binding to anything: no error, no
+    # /dev/watchdog, and systemd never pets a watchdog for the rest of that
+    # boot -- silently defeating the whole point of this script. Confirmed
+    # happening in practice on this exact board. arm-watchdog.sh runs later
+    # in boot and retries, which is the actual fix.
+    install -m 0755 "$SRC/arm-watchdog.sh" /opt/crashwatch/arm-watchdog.sh
+    install -m 0644 "$SRC/systemd/crashwatch-watchdog-arm.service" /etc/systemd/system/crashwatch-watchdog-arm.service
+    systemctl daemon-reload
+    systemctl enable --now crashwatch-watchdog-arm.service
     mkdir -p /etc/systemd/system.conf.d
     cat > /etc/systemd/system.conf.d/99-crashwatch-watchdog.conf <<EOF
 [Manager]
@@ -43,7 +56,13 @@ RuntimeWatchdogSec=20s
 RebootWatchdogSec=10min
 EOF
     systemctl daemon-reexec
-    echo "armed: $loaded, systemd pets every ~10s, forces reset if unpetted for 20s"
+    sleep 1
+    if [ -e /dev/watchdog ]; then
+        echo "armed: $loaded, systemd pets every ~10s, forces reset if unpetted for 20s"
+    else
+        echo "WARNING: /dev/watchdog still absent after arm-watchdog.sh ran -- check" >&2
+        echo "'journalctl -t crashwatch' and 'systemctl status crashwatch-watchdog-arm.service'" >&2
+    fi
 fi
 
 echo "== 2. convert silent lockups into a captured panic + auto-reboot =="
