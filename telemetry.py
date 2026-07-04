@@ -23,11 +23,16 @@ DATA_DIR = os.environ.get("CRASHWATCH_DIR", "/var/log/crashwatch")
 RETAIN_DAYS = 14
 GPU_FIELDS = (
     "power.draw,power.limit,temperature.gpu,utilization.gpu,utilization.memory,"
-    "clocks.sm,clocks.mem,pstate,memory.used,clocks_throttle_reasons.active"
+    "clocks.sm,clocks.mem,pstate,memory.used,clocks_throttle_reasons.active,"
+    "pcie.link.gen.current,pcie.link.gen.max,pcie.link.width.current,pcie.link.width.max,"
+    "ecc.errors.corrected.volatile.total,ecc.errors.uncorrected.volatile.total"
 )
+GPU_FIELD_COUNT = GPU_FIELDS.count(",") + 1
 HEADER = (
-    "wall_iso,mono_s,cpu_pkg_c,load1,mem_avail_mb,gpu_idx,gpu_power_w,gpu_plimit_w,"
-    "gpu_temp_c,gpu_util,gpu_memutil,gpu_sm_mhz,gpu_mem_mhz,pstate,gpu_mem_used_mib,throttle\n"
+    "wall_iso,mono_s,cpu_pkg_c,load1,mem_avail_mb,psi_cpu_full_avg10,psi_mem_full_avg10,"
+    "nvidia_irq_total,nvidia_smi_ms,gpu_idx,gpu_power_w,gpu_plimit_w,gpu_temp_c,gpu_util,"
+    "gpu_memutil,gpu_sm_mhz,gpu_mem_mhz,pstate,gpu_mem_used_mib,throttle,pcie_gen_cur,"
+    "pcie_gen_max,pcie_width_cur,pcie_width_max,ecc_corrected,ecc_uncorrected\n"
 )
 
 _running = True
@@ -88,6 +93,42 @@ def read_mem_avail_mb() -> str:
     return ""
 
 
+def read_psi_full_avg10(path: str) -> str:
+    """'full avg10' from /proc/pressure/{cpu,memory}: % of the last 10s ALL tasks
+    spent stalled waiting on that resource. A climb here ahead of a freeze is a
+    leading indicator of contention. Requires CONFIG_PSI (on by default on
+    modern kernels); returns "" if unavailable.
+    """
+    try:
+        for line in open(path):
+            if line.startswith("full "):
+                for field in line.split():
+                    if field.startswith("avg10="):
+                        return field.split("=", 1)[1]
+    except OSError:
+        pass
+    return ""
+
+
+def read_nvidia_irq_total() -> str:
+    """Sum of all nvidia MSI-X interrupt counts (all vectors, all CPUs) from
+    /proc/interrupts. A stall (stops climbing while the GPU is busy) or a storm
+    (sudden spike) both point at the GPU/PCIe hardware rather than a pure
+    software hang.
+    """
+    total = 0
+    found = False
+    try:
+        with open("/proc/interrupts") as handle:
+            for line in handle:
+                if line.rstrip().endswith("nvidia"):
+                    found = True
+                    total += sum(int(tok) for tok in line.split()[1:] if tok.isdigit())
+    except OSError:
+        return ""
+    return str(total) if found else ""
+
+
 def system_is_shutting_down() -> bool:
     """True only during a real system shutdown/reboot — not a `systemctl restart`.
 
@@ -107,17 +148,46 @@ def system_is_shutting_down() -> bool:
         return False
 
 
-def query_gpu() -> list[str]:
+def query_gpu() -> tuple[str, list[str]]:
+    """Returns (elapsed_ms, csv_lines). elapsed_ms is itself a leading
+    indicator: a GPU driver about to wedge typically answers slower before it
+    fully hangs.
+
+    Deliberately uses Popen + a non-blocking kill instead of
+    subprocess.run(timeout=...): run()'s timeout path calls an UNBOUNDED
+    process.wait() after kill(), which would hang forever if nvidia-smi itself
+    is stuck in an uninterruptible kernel wait (D-state) on a wedged GPU --
+    exactly the scenario this recorder exists to survive.
+    """
+    start = time.monotonic()
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["nvidia-smi", f"--query-gpu={GPU_FIELDS}", "--format=csv,noheader,nounits"],
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
             text=True,
-            timeout=5,
+            start_new_session=True,
         )
-        return [line.strip() for line in result.stdout.strip().splitlines() if line.strip()]
     except Exception:
-        return []
+        return "", []
+    try:
+        stdout, _ = proc.communicate(timeout=5)
+        elapsed_ms = f"{(time.monotonic() - start) * 1000:.0f}"
+        return elapsed_ms, [line.strip() for line in stdout.strip().splitlines() if line.strip()]
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        if proc.stdout:
+            proc.stdout.close()
+        try:
+            os.waitpid(proc.pid, os.WNOHANG)  # opportunistic reap; never blocks
+        except OSError:
+            pass
+        return f"{(time.monotonic() - start) * 1000:.0f}", []
+    except Exception:
+        return f"{(time.monotonic() - start) * 1000:.0f}", []
 
 
 def cleanup_old(now: float) -> None:
@@ -135,6 +205,18 @@ def main() -> None:
     os.makedirs(DATA_DIR, exist_ok=True)
     bid = boot_id()
     path = os.path.join(DATA_DIR, f"telemetry-{bid}.csv")
+
+    # If a schema upgrade (e.g. new columns) happens mid-boot, the existing file
+    # still has the OLD header on line 1. Appending new-shape rows under it would
+    # silently misalign every downstream column read. Rotate it aside instead.
+    if os.path.exists(path):
+        try:
+            with open(path) as existing:
+                if existing.readline() != HEADER:
+                    os.replace(path, path + ".old")
+        except OSError:
+            pass
+
     is_new = not os.path.exists(path)
 
     # A clean marker for the CURRENT boot is stale by definition (we are running
@@ -158,9 +240,16 @@ def main() -> None:
             cpu = read_cpu_temp()
             load = read_loadavg()
             mem = read_mem_avail_mb()
-            gpus = query_gpu() or [",,,,,,,,,"]  # still record host metrics if GPU query fails
+            psi_cpu = read_psi_full_avg10("/proc/pressure/cpu")
+            psi_mem = read_psi_full_avg10("/proc/pressure/memory")
+            irq = read_nvidia_irq_total()
+            smi_ms, gpus = query_gpu()
+            gpus = gpus or [",".join([""] * GPU_FIELD_COUNT)]  # still record host metrics if GPU query fails
             for idx, gpu in enumerate(gpus):
-                out.write(f"{wall},{start:.1f},{cpu},{load},{mem},{idx},{gpu}\n")
+                out.write(
+                    f"{wall},{start:.1f},{cpu},{load},{mem},{psi_cpu},{psi_mem},"
+                    f"{irq},{smi_ms},{idx},{gpu}\n"
+                )
             out.flush()
             os.fsync(out.fileno())
             elapsed = time.monotonic() - start

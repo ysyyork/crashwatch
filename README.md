@@ -16,10 +16,11 @@ crashwatch works around it two ways:
    the pre-crash telemetry tail, any kernel-panic remnants (`pstore`), and the
    previous boot's last kernel lines.
 
-It was built to diagnose spontaneous hard resets on a high-power GPU workstation
-(where a PSU transient / power-delivery fault can reset the box with zero
-software fingerprint), but it's useful for any "it just rebooted and I don't
-know why" situation.
+It was built to diagnose spontaneous hard resets and total freezes on a
+high-power GPU workstation, but it's useful for any "it just died and I don't
+know why" situation — whether that's an instant power cut (screen dies with the
+rest of the machine) or a hard hang (fans/lights stay on, but no video, no
+network, no input — see below for why that distinction matters).
 
 ## What it records
 
@@ -30,8 +31,22 @@ Each 1 Hz sample (`/var/log/crashwatch/telemetry-<boot>.csv`):
 | GPU power draw / limit | A spike toward the limit right before death points at power delivery / PSU |
 | GPU temp, clocks, pstate, throttle bitmask | Distinguishes thermal / power-cap throttling from a clean cut |
 | GPU util / mem used | What the GPU was doing at the moment of death |
+| `nvidia_smi_ms` | Wall time of the GPU query itself — a driver about to wedge often answers slower before it fully hangs |
+| PCIe link gen/width (current vs. max) | A link that has dropped from its max (e.g. Gen5x16 → Gen1x1) points at a GPU/PCIe hardware fault |
+| ECC corrected/uncorrected totals | `N/A` on consumer GPUs (no ECC); meaningful on datacenter cards |
+| `nvidia_irq_total` | Sum of all GPU MSI-X interrupt counts — a stall (stops climbing while busy) or storm (spikes) implicates the GPU/PCIe hardware |
 | CPU package temp | Rules thermal in or out |
+| PSI `full avg10` (CPU, memory) | % of the last 10s ALL tasks were stalled on that resource — a climb ahead of a freeze is a leading indicator of contention |
 | load average, free RAM | Load spike / OOM pressure context |
+
+The GPU query itself is hardened against being part of the problem: it runs via
+`Popen` with a non-blocking kill on timeout rather than
+`subprocess.run(timeout=...)`, because `run()`'s timeout path calls an
+*unbounded* `wait()` after killing the child — which would hang the recorder
+forever if `nvidia-smi` itself is stuck in an uninterruptible kernel wait
+(D-state) on a wedged GPU. That's exactly the scenario this tool exists to
+survive, so the recorder must never be able to join the hang it's trying to
+observe.
 
 ## How to read a crash
 
@@ -43,10 +58,10 @@ After the next crash, the box boots and auto-writes a report:
 
 Interpretation cheatsheet:
 
-- **Last samples show GPU watts spiking toward the limit / throttle bit set** → power / thermal.
-- **It died at idle** → power-transient unlikely; look elsewhere.
-- **`pstore` has content** → it was a *kernel panic*, not a power cut — the stack trace is included.
-- **`pstore` empty + telemetry stops mid-stream + no panic** → instant hard reset (power / hardware).
+- **Front-panel LED / fans died along with everything else** → real power loss. Look at GPU watts in the last samples: a spike toward the limit points at power delivery / PSU; idle at time of death means look elsewhere.
+- **LED/fans stayed on, but no video output, no network, no input** → this is a **hard freeze**, not a power cut — the CPU stopped scheduling entirely. It is *not* proof the GPU caused it: when the whole scheduler halts, video/network/input all stop together as equally-downstream symptoms, whether or not the GPU was the root cause. Check `nvidia_smi_ms` and the IRQ/PCIe columns in the seconds before death for a real leading indicator instead of inferring cause from "no video" alone.
+- **`pstore` has content** → it was a *kernel panic*, not a silent freeze — the stack trace is included.
+- **`pstore` empty + telemetry stops mid-stream + no panic** → the freeze was total enough that not even the kernel's own panic/NMI-watchdog path could run or flush. See "companions" below for how to catch this in real time on the *next* occurrence.
 
 ## Install
 

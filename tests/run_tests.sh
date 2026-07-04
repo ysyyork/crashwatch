@@ -17,7 +17,7 @@ check() { if eval "$2"; then echo "  PASS: $1"; else echo "  FAIL: $1"; fails=$(
 mkdir -p "$TMP/bin"
 cat > "$TMP/bin/nvidia-smi" <<'EOF'
 #!/usr/bin/env bash
-echo "560.42, 575.00, 71, 99, 40, 2900, 14001, P0, 23456, 0x0000000000000004"
+echo "560.42, 575.00, 71, 99, 40, 2900, 14001, P0, 23456, 0x0000000000000004, 4, 5, 16, 16, 0, 0"
 EOF
 chmod +x "$TMP/bin/nvidia-smi"
 export PATH="$TMP/bin:$PATH"
@@ -94,6 +94,40 @@ chmod +x "$TMP/bin/nvidia-smi"
 CRASHWATCH_DIR="$TMP/data2" CRASHWATCH_BOOT_ID=999999999999 python3 "$ROOT/telemetry.py" & tpid=$!; sleep 0.7; kill -9 "$tpid" 2>/dev/null; wait "$tpid" 2>/dev/null
 csv2="$TMP/data2/telemetry-999999999999.csv"
 check "still records host rows without a GPU"      "[ -f '$csv2' ] && [ \$(wc -l < '$csv2') -ge 2 ]"
+
+echo "[6] a HANGING nvidia-smi must not block the recorder past its 5s timeout"
+cat > "$TMP/bin/nvidia-smi" <<'EOF'
+#!/usr/bin/env bash
+sleep 30
+EOF
+chmod +x "$TMP/bin/nvidia-smi"
+CRASHWATCH_DIR="$TMP/data_hang" CRASHWATCH_BOOT_ID=222222222222 python3 "$ROOT/telemetry.py" &
+tpid=$!
+sleep 7   # > the 5s internal GPU-query timeout, << the 30s fake hang
+kill -9 "$tpid" 2>/dev/null
+wait "$tpid" 2>/dev/null
+csv_hang="$TMP/data_hang/telemetry-222222222222.csv"
+check "recorder still produced a row despite the hang" "[ -f '$csv_hang' ] && [ \$(wc -l < '$csv_hang') -ge 2 ]"
+check "nvidia_smi_ms reflects the ~5s timeout, not the 30s hang" \
+  "awk -F, 'NR==2{exit (\$9+0 >= 4500 && \$9+0 < 30000) ? 0 : 1}' '$csv_hang'"
+
+echo "[7] a stale-schema file from a previous code version is rotated, not corrupted"
+cat > "$TMP/bin/nvidia-smi" <<'EOF'
+#!/usr/bin/env bash
+echo "560.42, 575.00, 71, 99, 40, 2900, 14001, P0, 23456, 0x0000000000000004, 4, 5, 16, 16, 0, 0"
+EOF
+chmod +x "$TMP/bin/nvidia-smi"
+mkdir -p "$TMP/data_schema"
+printf 'wall_iso,mono_s,cpu_pkg_c,load1,mem_avail_mb,gpu_idx,gpu_power_w\nSTALE,1,2,3,4,0,5\n' \
+  > "$TMP/data_schema/telemetry-333333333333.csv"
+CRASHWATCH_DIR="$TMP/data_schema" CRASHWATCH_BOOT_ID=333333333333 python3 "$ROOT/telemetry.py" &
+tpid=$!
+sleep 0.5
+kill -9 "$tpid" 2>/dev/null
+wait "$tpid" 2>/dev/null
+check "old-schema file preserved as .old"          "grep -q STALE '$TMP/data_schema/telemetry-333333333333.csv.old'"
+check "current file starts with the NEW header"    "head -1 '$TMP/data_schema/telemetry-333333333333.csv' | grep -q nvidia_smi_ms"
+check "current file's rows match the NEW header"   "[ \$(head -1 '$TMP/data_schema/telemetry-333333333333.csv' | tr ',' '\n' | wc -l) = \$(sed -n 2p '$TMP/data_schema/telemetry-333333333333.csv' | tr ',' '\n' | wc -l) ]"
 
 echo
 if [ "$fails" -eq 0 ]; then
