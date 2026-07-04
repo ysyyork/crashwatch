@@ -85,6 +85,22 @@ systemd/crashwatch-postmortem.service # runs the collector once at boot
 install.sh / uninstall.sh
 ```
 
+## Testing
+
+The suite mock-tests the whole flow **without crashing anything** — it runs the
+real recorder against a temp dir with a fake `nvidia-smi`, simulates a power
+loss (`kill -9`, no clean marker) vs. a clean shutdown (`SIGTERM`, marker
+written), and asserts the post-mortem produces (or suppresses) a report
+accordingly. No dependencies beyond `python3` + coreutils:
+
+```bash
+./tests/run_tests.sh
+```
+
+The scripts honor a few `CRASHWATCH_*` env overrides (data dir, sample interval,
+boot id, pstore dir) purely so the tests can redirect them; production uses the
+defaults.
+
 ## Optional companions (not included, but recommended for hard hangs)
 
 - **netconsole / remote syslog** — stream kernel messages to another machine on

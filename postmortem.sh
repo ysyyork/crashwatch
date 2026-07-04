@@ -7,11 +7,13 @@
 # pstore, and the previous boot's last kernel lines.
 set -uo pipefail
 
-DATA=/var/log/crashwatch
+# CRASHWATCH_* env overrides exist for the test suite; production uses defaults.
+DATA="${CRASHWATCH_DIR:-/var/log/crashwatch}"
+PSTORE="${CRASHWATCH_PSTORE:-/sys/fs/pstore}"
 REPORTS="$DATA/reports"
 mkdir -p "$REPORTS"
 
-cur=$(tr -d - < /proc/sys/kernel/random/boot_id | cut -c1-12)
+cur="${CRASHWATCH_BOOT_ID:-$(tr -d - < /proc/sys/kernel/random/boot_id | cut -c1-12)}"
 
 # Most recent telemetry file that is NOT the current boot = the previous session.
 prev=$(ls -t "$DATA"/telemetry-*.csv 2>/dev/null | grep -v "telemetry-$cur.csv" | head -1)
@@ -36,8 +38,8 @@ rpt="$REPORTS/crash-$ts.txt"
     tail -150 "$prev"
     echo
     echo "=== KERNEL PANIC REMNANTS (pstore) — empty here means NOT a panic (points to power/hard-reset) ==="
-    ls -la /sys/fs/pstore/ 2>/dev/null
-    cat /sys/fs/pstore/* 2>/dev/null | head -300
+    ls -la "$PSTORE"/ 2>/dev/null
+    cat "$PSTORE"/* 2>/dev/null | head -300
     echo
     echo "=== PREVIOUS BOOT: last 80 kernel lines ==="
     journalctl -k -b -1 --no-pager 2>/dev/null | tail -80
@@ -51,7 +53,7 @@ rpt="$REPORTS/crash-$ts.txt"
 } > "$rpt" 2>&1
 
 # Preserve any pstore records before something clears them, then free pstore.
-cp -a /sys/fs/pstore/* "$REPORTS/" 2>/dev/null || true
+cp -a "$PSTORE"/* "$REPORTS/" 2>/dev/null || true
 
 logger -t crashwatch "post-mortem: previous boot $pbid crashed; report at $rpt"
 exit 0
