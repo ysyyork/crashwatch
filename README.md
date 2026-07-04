@@ -116,14 +116,51 @@ The scripts honor a few `CRASHWATCH_*` env overrides (data dir, sample interval,
 boot id, pstore dir) purely so the tests can redirect them; production uses the
 defaults.
 
-## Optional companions (not included, but recommended for hard hangs)
+## Hardening: `harden.sh` (optional, changes reboot behavior)
 
-- **netconsole / remote syslog** — stream kernel messages to another machine on
-  the LAN so a hard *hang's* dying words (GPU Xid, hung-task trace, panic) are
-  captured off-box in real time.
-- **"Loud hang" sysctls** — `kernel.panic_on_oops=1`, `kernel.hung_task_panic=1`,
-  `kernel.softlockup_panic=1`, `kernel.panic=10` convert a silent freeze into a
-  captured panic and auto-reboot.
+The passive recorder only *observes*. It cannot make a silent total freeze
+(fans/lights on, no video, no network, no input — a full scheduler lockup)
+produce a diagnosable trace or even recover on its own: without a hardware
+watchdog, that class of failure just sits dead until someone manually
+power-cycles it, and even when the kernel's own lockup detectors *do* notice,
+by default they only print a warning instead of panicking — so if local
+logging is also stalled, that warning is lost forever.
+
+`harden.sh` closes both gaps:
+
+1. **Arms a hardware watchdog** (`iTCO_wdt` on most Intel boards,
+   `sp5100_tco`/`wdat_wdt` as fallbacks) via systemd's `RuntimeWatchdogSec`.
+   systemd pets it periodically from a kernel timer independent of anything in
+   userspace; if the scheduler itself freezes, the pets stop and the chipset
+   forces a hardware reset — no more sitting dead indefinitely.
+2. **Converts silent lockup detection into a captured panic + auto-reboot** via
+   `kernel.hardlockup_panic`, `kernel.softlockup_panic`, `kernel.hung_task_panic`,
+   `kernel.panic_on_oops`, `kernel.panic_on_io_nmi`, `kernel.panic_on_unrecovered_nmi`,
+   and `kernel.panic=10`. When the kernel *can* detect the problem, this makes
+   it write to `pstore` and reboot automatically instead of printing a warning
+   that dies with the machine.
+
+```bash
+sudo ./harden.sh
+sudo ./unharden.sh   # revert
+```
+
+**Trade-off — read before running:** a transient stall that might previously
+have self-recovered will now force a reboot. In particular
+`kernel.hung_task_panic=1` fires if *any* task sits in an uninterruptible wait
+for `kernel.hung_task_timeout_secs` (default 120s) — on a box doing heavy
+Docker/GPU/disk work, a legitimately slow (not actually hung) I/O operation
+could in principle hit that window. Raise the timeout if you want more
+headroom: `CRASHWATCH_HUNG_TASK_TIMEOUT=300 sudo -E ./harden.sh`.
+
+**Ceiling on what this buys you:** if the freeze is severe enough that even
+NMI delivery is blocked (a true hardware-level paralysis, not just a wedged
+driver), no software-side detector runs at all — only the independent hardware
+watchdog timer will still fire, which is why both layers exist together. And
+even the watchdog can't tell you *why* it froze, only that it did; for that,
+pair this with **netconsole** to a second always-on machine on your LAN, which
+streams kernel messages off-box in real time and can catch a final message
+that never made it to local disk.
 
 ## License
 
