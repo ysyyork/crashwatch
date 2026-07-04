@@ -1,0 +1,17 @@
+[Unit]
+Description=Crashwatch black-box telemetry (1Hz, fsynced)
+After=multi-user.target nvidia-persistenced.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/crashwatch/telemetry.py
+Restart=always
+RestartSec=2
+Nice=-5
+# Keep the recorder responsive even under heavy IO/CPU load.
+IOSchedulingClass=best-effort
+IOSchedulingPriority=0
+OOMScoreAdjust=-800
+
+[Install]
+WantedBy=multi-user.target

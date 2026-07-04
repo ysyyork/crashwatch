@@ -1,0 +1,11 @@
+[Unit]
+Description=Crashwatch boot-time post-mortem collector
+After=systemd-journald.service crashwatch-telemetry.service
+Wants=crashwatch-telemetry.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/crashwatch/postmortem.sh
+
+[Install]
+WantedBy=multi-user.target
