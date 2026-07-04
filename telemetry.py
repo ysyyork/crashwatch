@@ -7,6 +7,8 @@ second of state on disk. One append-only file per boot; the tail of the
 *previous* boot's file is the pre-crash black box.
 
 Pure stdlib + nvidia-smi. Runs as a root system service (see the .service unit).
+
+Requires Python 3.9+ (uses PEP 585 builtin-generic annotations, e.g. list[str]).
 """
 import glob
 import os

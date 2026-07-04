@@ -50,8 +50,9 @@ Interpretation cheatsheet:
 
 ## Install
 
-Requires: Linux + systemd, Python 3 (stdlib only). `nvidia-smi` optional (GPU
-fields are simply blank without it). `lm-sensors` optional (nicer report).
+Requires: Linux + systemd, **Python 3.9+** (stdlib only — no pip installs).
+`nvidia-smi` optional (GPU fields are simply blank without it). `lm-sensors`
+optional (nicer report).
 
 ```bash
 git clone https://github.com/ysyyork/crashwatch.git
