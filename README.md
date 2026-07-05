@@ -158,9 +158,54 @@ NMI delivery is blocked (a true hardware-level paralysis, not just a wedged
 driver), no software-side detector runs at all — only the independent hardware
 watchdog timer will still fire, which is why both layers exist together. And
 even the watchdog can't tell you *why* it froze, only that it did; for that,
-pair this with **netconsole** to a second always-on machine on your LAN, which
-streams kernel messages off-box in real time and can catch a final message
-that never made it to local disk.
+pair this with **netconsole** (below), which streams kernel messages off-box
+in real time and can catch a final message that never made it to local disk.
+
+## netconsole: stream kernel messages to a second machine (optional)
+
+`kernel.printk`'s console framework can push every kernel message out over the
+raw network via `netpoll`, bypassing the local disk/journald entirely — useful
+because during a severe freeze, local logging can stall right along with
+everything else. `netconsole-arm.sh` + `crashwatch-netconsole.service` load
+and configure it, retrying past the early-boot race where the local interface
+doesn't have its IP bound yet (the exact same class of bug that silently
+defeated the hardware watchdog above — see `arm-watchdog.sh`).
+
+**Setup:**
+```bash
+sudo mkdir -p /etc/crashwatch
+sudo cp netconsole.env.example /etc/crashwatch/netconsole.env
+sudo $EDITOR /etc/crashwatch/netconsole.env   # fill in your real values
+sudo install -m 0755 netconsole-arm.sh /opt/crashwatch/netconsole-arm.sh
+sudo install -m 0644 systemd/crashwatch-netconsole.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now crashwatch-netconsole.service
+```
+
+On the receiving machine, run any UDP listener on the configured port, e.g.:
+```bash
+python3 -c "
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(('0.0.0.0', 6666))
+while True:
+    data, addr = s.recvfrom(65535)
+    print(addr, data.decode(errors='replace'))
+"
+```
+
+**Two non-obvious things learned setting this up:**
+- **`tcpdump` cannot see netconsole's packets.** `netpoll` transmits via a
+  low-level path that bypasses the capture hook `tcpdump` taps into, even
+  though the packets are genuinely being sent and received. Verify delivery at
+  the *receiving* end, not by sniffing the sender's interface.
+- **Only messages at or below `kernel.printk`'s console log level actually go
+  out.** Check yours with `cat /proc/sys/kernel/printk` (first number). A
+  `KERN_INFO` (6) test message can sit in `dmesg` (which reads the ring buffer
+  directly) while never reaching netconsole if the threshold is 4 — test with
+  `echo "<0>test message" | sudo tee /dev/kmsg` (`<0>` = `KERN_EMERG`, always
+  passes). This isn't a practical limitation for the crash scenarios this tool
+  targets: panics, hardlockup/softlockup/hung-task warnings, and Xid errors are
+  all emitted at priority 0-3, well within a typical default threshold.
 
 ## License
 

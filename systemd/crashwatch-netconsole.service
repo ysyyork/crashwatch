@@ -1,0 +1,12 @@
+[Unit]
+Description=Arm netconsole (stream kernel messages to a remote listener)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/crashwatch/netconsole-arm.sh
+
+[Install]
+WantedBy=multi-user.target
